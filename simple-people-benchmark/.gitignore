@@ -26,6 +26,9 @@ venv/
 ENV/
 env/
 
+# Secrets
+.env
+
 # IDE
 .idea/
 .vscode/
@@ -50,3 +53,7 @@ Thumbs.db
 .uv/
 uv.lock
 
+# Custom
+artifacts/
+logs/
+*.log

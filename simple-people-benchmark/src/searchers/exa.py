@@ -3,7 +3,42 @@ from typing import Any
 
 import httpx
 
-from .base import SearchResult, Searcher
+from .base import Searcher, SearchResponse, SearchResult
+
+
+class CachingSearcher(Searcher):
+    """Wrapper that caches search results by (query, num_results) to ensure
+    multiple searchers get exactly the same results for the same query."""
+
+    name = "caching"
+
+    def __init__(self, searcher: Searcher):
+        self._searcher = searcher
+        self._cache: dict[tuple[str, int], SearchResponse] = {}
+
+    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+        key = (query, num_results)
+        if key not in self._cache:
+            self._cache[key] = await self._searcher.search(query, num_results)
+        return self._cache[key]
+
+    async def close(self):
+        await self._searcher.close()
+
+    def get_config(self) -> dict[str, Any]:
+        return {
+            "cached": True,
+            "inner": self._searcher.get_config(),
+        }
+
+    def clear_cache(self):
+        """Clear the cache."""
+        self._cache.clear()
+
+    @property
+    def cache_size(self) -> int:
+        """Return the number of cached queries."""
+        return len(self._cache)
 
 
 class ExaSearcher(Searcher):
@@ -27,7 +62,7 @@ class ExaSearcher(Searcher):
         self.search_type = search_type
         self._client = httpx.AsyncClient(timeout=60.0)
 
-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
         payload: dict[str, Any] = {
             "query": query,
             "numResults": num_results,
@@ -66,8 +101,20 @@ class ExaSearcher(Searcher):
                 )
             )
 
-        return results
+        query_stats: dict[str, Any] = {}
+        cost_dollars = data.get("costDollars", {})
+        if "total" in cost_dollars:
+            query_stats["exa_cost_usd"] = cost_dollars["total"]
+
+        return SearchResponse(results=results, query_stats=query_stats)
 
     async def close(self):
         await self._client.aclose()
 
+    def get_config(self) -> dict[str, Any]:
+        return {
+            "base_url": self.base_url,
+            "include_text": self.include_text,
+            "category": self.category,
+            "search_type": self.search_type,
+        }

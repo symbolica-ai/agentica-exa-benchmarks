@@ -58,6 +58,12 @@ class PeopleGrader:
         self.temperature = temperature
         self.client = AsyncOpenAI(api_key=api_key)
 
+    def get_config(self) -> dict[str, float | str]:
+        return {
+            "model": self.model,
+            "temperature": self.temperature,
+        }
+
     async def grade(self, query: str, result: SearchResult) -> GradeResult:
         try:
             response = await self.client.beta.chat.completions.parse(

@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from .base import SearchResult, Searcher
+from .base import Searcher, SearchResponse, SearchResult
 
 
 class ParallelSearcher(Searcher):
@@ -16,22 +16,16 @@ class ParallelSearcher(Searcher):
         processor: str = "base",
         source_policy: dict | None = None,
     ):
-        self.api_key = (
-            api_key
-            or os.getenv("PARALLEL_API_KEY")
-            or os.getenv("PARALLELS_API_KEY")
-        )
+        self.api_key = api_key or os.getenv("PARALLEL_API_KEY") or os.getenv("PARALLELS_API_KEY")
         if not self.api_key:
-            raise ValueError(
-                "Parallel API key required - set PARALLEL_API_KEY or pass api_key"
-            )
+            raise ValueError("Parallel API key required - set PARALLEL_API_KEY or pass api_key")
 
         self.base_url = base_url
         self.processor = processor
         self.source_policy = source_policy
         self._client = httpx.AsyncClient(timeout=60.0)
 
-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
         payload: dict[str, Any] = {
             "max_results": num_results,
             "processor": self.processor,
@@ -74,13 +68,20 @@ class ParallelSearcher(Searcher):
                     metadata={
                         "rank": i,
                         "author": result.get("author"),
-                        "published_date": result.get("published_date") or result.get("publishedDate"),
+                        "published_date": result.get("published_date")
+                        or result.get("publishedDate"),
                     },
                 )
             )
 
-        return results
+        return SearchResponse(results=results)
 
     async def close(self):
         await self._client.aclose()
 
+    def get_config(self) -> dict[str, Any]:
+        return {
+            "base_url": self.base_url,
+            "processor": self.processor,
+            "source_policy": self.source_policy,
+        }

@@ -2,6 +2,10 @@
 
 An open benchmark for evaluating people search. Test how well your search API finds LinkedIn profiles by role, location, and seniority.
 
+## Agentica internal experiments
+
+Check [symbolica readme](./SYMBOLICA_README.md) for details.
+
 ## Overview
 
 | Metric | Description |

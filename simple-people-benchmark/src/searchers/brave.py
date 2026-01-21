@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from .base import SearchResult, Searcher
+from .base import Searcher, SearchResponse, SearchResult
 
 
 class BraveSearcher(Searcher):
@@ -18,16 +18,14 @@ class BraveSearcher(Searcher):
     ):
         self.api_key = api_key or os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
         if not self.api_key:
-            raise ValueError(
-                "Brave API key required - set BRAVE_SEARCH_API_KEY or pass api_key"
-            )
+            raise ValueError("Brave API key required - set BRAVE_SEARCH_API_KEY or pass api_key")
 
         self.base_url = base_url
         self.site_filter = site_filter
         self.brave_args = brave_args
         self._client = httpx.AsyncClient(timeout=60.0)
 
-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
         search_query = query
         if self.site_filter:
             search_query = f"site:{self.site_filter} {search_query}"
@@ -80,8 +78,14 @@ class BraveSearcher(Searcher):
                 )
             )
 
-        return results
+        return SearchResponse(results=results)
 
     async def close(self):
         await self._client.aclose()
 
+    def get_config(self) -> dict[str, Any]:
+        return {
+            "base_url": self.base_url,
+            "site_filter": self.site_filter,
+            **self.brave_args,
+        }

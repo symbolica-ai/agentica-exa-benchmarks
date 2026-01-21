@@ -1,0 +1,2525 @@
+commit 5e3eb2220531e63d04566a6aeb088fb1ed14c1d6
+Author: Michael Polyntsov <misha@symbolica.ai>
+Date:   Tue Jan 13 10:42:21 2026 +0000
+
+    Searchers implemented with Agentica
+    
+    Uses gemini-3-flash-preview + EXA "fast" search
+    
+    There are 2 agents:
+    1) Re-ranking only
+    2) Search agent
+    
+    JSON mode equivalents were implemented for both agents to compare relative performance
+
+diff --git a/README.md b/README.md
+index 2795470..619471e 100644
+--- a/README.md
++++ b/README.md
+@@ -2,6 +2,10 @@
+ 
+ An open benchmark for evaluating people search. Test how well your search API finds LinkedIn profiles by role, location, and seniority.
+ 
++## Agentica internal experiments
++
++Check [symbolica readme](./SYMBOLICA_README.md) for details.
++
+ ## Overview
+ 
+ | Metric | Description |
+diff --git a/SYMBOLICA_README.md b/SYMBOLICA_README.md
+new file mode 100644
+index 0000000..02ffc46
+--- /dev/null
++++ b/SYMBOLICA_README.md
+@@ -0,0 +1,202 @@
++# Symbolica Agentica - People Search Benchmark Guide
++
++This guide covers how to run the `pbench` benchmark tool with Symbolica Agentica-based searchers and analyze the results.
++
++## Prerequisites
++
++### Environment Variables
++
++```bash
++# Required for all searchers
++export EXA_API_KEY="your-exa-api-key"
++
++# Required for LLM grading (evaluating results)
++export OPENAI_API_KEY="your-openai-api-key"
++
++# Required for inference in agentica searchers
++export OPENROUTER_API_KEY="your-openrouter-api-key"
++
++# Optional: Configure agentica model (default: openrouter:google/gemini-3-flash-preview)
++# Model name should be prefixed with `openrouter:`
++export AGENTICA_MODEL="openrouter:google/gemini-3-flash-preview"
++```
++
++### Installation
++
++```bash
++cd simple-people-benchmark
++
++# Using uv (recommended)
++uv sync
++
++# Or using pip
++pip install -e .
++```
++
++## Running Benchmarks
++
++### Basic Usage
++
++First `source ./venv/bin/activate` or prepend **all** the commands below with `uv run` (i.e. `uv run pbench` instead of `pbench`).
++
++```bash
++# Run with default searchers (exa, brave, parallel)
++pbench
++
++# Run with specific searchers
++pbench --searchers agentica
++
++# Run with multiple searchers for comparison
++pbench --searchers exa agentica agentica_orderer
++
++# Limit queries for quick testing
++pbench --searchers agentica --limit 10
++
++# Save results to file
++pbench --searchers agentica -o results.json
++```
++
++NOTE: If you don't specify `-o` path, results **are not going to be saved on the disk** and it won't be possible to retrieve the evaluation details. So it's most likely you'd want to specify `-o` for your runs.
++
++### Available Searchers
++
++| Searcher | Description |
++|----------|-------------|
++| `exa` | Direct Exa API search with `category="people"` |
++| `brave` | Brave Search filtered to `linkedin.com/in` |
++| `parallel` | Internal parallel searcher filtered to LinkedIn |
++| `agentica` | Agentica agent that constructs and executes Exa search |
++| `agentica_orderer` | Agentica agent that only reorders provided Exa results by relevance |
++| `openai` | OpenAI-based agent searcher |
++| `openai_orderer` | OpenAI-based agent that only reorders provided Exa results by relevance |
++
++### CLI Options
++
++```bash
++pbench --help
++
++Options:
++  --limit N              Limit number of queries (default: all 1400)
++  --num-results N        Results per query (default: 10)
++  --output, -o FILE      Save results to JSON file
++  --enrich-exa-contents  Fetch full page contents via Exa API
++  --searchers NAME...    Searchers to use
++  --no-grading           Skip LLM grading (results scored as 0)
++```
++
++### Agent Logs
++
++When using `agentica` or `agentica_orderer` searchers, agent conversation logs are saved to a directory:
++
++- **With `-o` option**: Logs go to `./<output_stem>/` (e.g., `-o results.json` → `./results/`)
++- **Without `-o` option**: Logs go to `./logs/`
++
++Log files are named `agent-0.log`, `agent-1.log`, etc. and contain the full agent conversation history.
++
++## Analyzing Results
++
++### Summary Table
++
++Use `analyze_results.py` to view a comprehensive summary:
++
++```bash
++python scripts/analyze_results.py results.json
++```
++
++Output includes:
++
++| Column | Description |
++|--------|-------------|
++| R@1 | % of queries with correct first result |
++| R@10 | % of queries with correct result in top 10 |
++| Prec | Precision (% of results that are relevant) |
++| Fail | Number of failed queries |
++| ∑ Time | Total elapsed time across all queries |
++| Est. Wall | Estimated wall-clock time (assumes concurrency=20) |
++| Min/Max/Avg | Query time statistics |
++| LLM Cost | Total LLM API cost (for agent searchers) |
++| Exa Cost | Total Exa API cost (based on public exa cost) |
++| Total Cost | Combined cost |
++| Srch/q | Average search calls per query |
++| Tokens/q | Average input/output tokens per query |
++
++### Per-Query Comparison
++
++Use `compare_searchers.py` for detailed per-query analysis:
++
++```bash
++# Compare all searchers
++python scripts/compare_searchers.py results.json
++
++# Compare specific searchers
++python scripts/compare_searchers.py results.json --searchers exa agentica
++```
++
++This shows per-query metrics side-by-side for each searcher.
++
++## Rerunning Failed Queries
++
++If some queries failed (e.g., timeouts), you can rerun just those:
++
++```bash
++python scripts/run_failed.py results.json -o results-fixed.json
++
++# Exclude certain error types from rerun, useful when we don't want to rerun queries where agent returned value of incorrect format
++python scripts/run_failed.py results.json -o results-fixed.json --exclude ValueError
++```
++
++NOTE: If output file specified in `-o` is the same as input file, **failed queries from input file will be overwritten**. So be careful to not loose initial run failing queries details. 
++
++## Example Workflows
++
++### Quick Test Run
++
++```bash
++# Test agentica with 5 queries
++pbench --searchers agentica --limit 5 -o test.json
++python scripts/analyze_results.py test.json
++```
++
++### Full Benchmark Comparison
++
++```bash
++# Run full benchmark with multiple searchers
++pbench --searchers exa agentica agentica_orderer -o comparison.json
++
++# Analyze results
++python scripts/analyze_results.py comparison.json
++
++# View per-query breakdown
++python scripts/compare_searchers.py comparison.json
++```
++
++### Fix Failed Queries
++
++```bash
++# Initial run
++pbench --searchers agentica -o results.json
++
++# Check for failures
++python scripts/analyze_results.py results.json  # Look at "Fail" column, also inspect results.json to see actual errors
++
++# Rerun failed queries
++python scripts/run_failed.py results.json -o results-fixed.json
++
++# Verify fixes
++python scripts/analyze_results.py results-fixed.json
++```
++
++### Skip Grading for Speed
++
++```bash
++# Run without LLM grading (useful for testing metrics except scores avoiding expensive grading)
++pbench --searchers agentica --limit 50 --no-grading -o no-grade.json
++```
++
++## Metrics Explained
++
++| Metric | Formula | Description |
++|--------|---------|-------------|
++| **R@1** (Match) | `queries_with_match_at_rank_1 / total_queries` | First result is relevant |
++| **R@10** (Recall@10) | `queries_with_any_match_in_top_10 / total_queries` | Any relevant result in top 10 |
++| **Precision** | `total_relevant_results / total_results` | Overall relevance of returned results |
+diff --git a/simple-people-benchmark/.gitignore b/simple-people-benchmark/.gitignore
+index af5aff8..3ac4260 100644
+--- a/simple-people-benchmark/.gitignore
++++ b/simple-people-benchmark/.gitignore
+@@ -26,6 +26,9 @@ venv/
+ ENV/
+ env/
+ 
++# Secrets
++.env
++
+ # IDE
+ .idea/
+ .vscode/
+@@ -50,3 +53,7 @@ Thumbs.db
+ .uv/
+ uv.lock
+ 
++# Custom
++artifacts/
++logs/
++*.log
+diff --git a/simple-people-benchmark/pyproject.toml b/simple-people-benchmark/pyproject.toml
+index 06c272c..3da619c 100644
+--- a/simple-people-benchmark/pyproject.toml
++++ b/simple-people-benchmark/pyproject.toml
+@@ -2,8 +2,8 @@
+ name = "people-benchmark"
+ version = "0.1.0"
+ description = "Open benchmark for evaluating people search (LinkedIn profiles)"
+-readme = "README.md"
+-requires-python = ">=3.11"
++readme = "../README.md"
++requires-python = ">=3.12"
+ license = { text = "MIT" }
+ authors = [{ name = "Exa", email = "hello@exa.ai" }]
+ keywords = ["benchmark", "search", "people", "linkedin", "evaluation", "llm"]
+@@ -11,7 +11,6 @@ classifiers = [
+     "Development Status :: 4 - Beta",
+     "Intended Audience :: Science/Research",
+     "License :: OSI Approved :: MIT License",
+-    "Programming Language :: Python :: 3.11",
+     "Programming Language :: Python :: 3.12",
+ ]
+ 
+@@ -21,6 +20,7 @@ dependencies = [
+     "pydantic>=2.0.0",
+     "tenacity>=8.0.0",
+     "rich>=13.0.0",
++    "symbolica-agentica>=0.3.2"
+ ]
+ 
+ [project.optional-dependencies]
+diff --git a/simple-people-benchmark/scripts/analyze_results.py b/simple-people-benchmark/scripts/analyze_results.py
+new file mode 100644
+index 0000000..d565a9c
+--- /dev/null
++++ b/simple-people-benchmark/scripts/analyze_results.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python3
++"""Analyze benchmark results and print a summary table."""
++
++import argparse
++import json
++import sys
++from pathlib import Path
++
++from rich.console import Console
++from rich.table import Table
++
++
++def analyze_results(results_file: str) -> None:
++    path = Path(results_file)
++    if not path.exists():
++        print(f"Error: File not found: {results_file}", file=sys.stderr)
++        sys.exit(1)
++
++    with open(path) as f:
++        data = json.load(f)
++
++    console = Console()
++    table = Table(title="Benchmark Results", expand=False)
++
++    # Add columns with minimum widths to prevent truncation
++    table.add_column("Searcher", style="cyan", min_width=10)
++    table.add_column("R@1", justify="right", min_width=5)
++    table.add_column("R@10", justify="right", min_width=5)
++    table.add_column("Prec", justify="right", min_width=5)
++    table.add_column("Fail", justify="right", min_width=4)
++    table.add_column("∑ Time", justify="right", min_width=6)
++    table.add_column("Est. Wall", justify="right", min_width=8)
++    table.add_column("Min", justify="right", min_width=5)
++    table.add_column("Max", justify="right", min_width=5)
++    table.add_column("Avg", justify="right", min_width=6)
++    table.add_column("LLM Cost", justify="right", min_width=7)
++    table.add_column("LLM Cost/q", justify="right", min_width=7)
++    table.add_column("Exa Cost", justify="right", min_width=7)
++    table.add_column("Exa Cost/q", justify="right", min_width=7)
++    table.add_column("Total Cost", justify="right", min_width=7)
++    table.add_column("Srch/q", justify="right", min_width=6)
++    table.add_column("Tokens/q", justify="right", min_width=12)
++
++    searchers = data.get("searchers", {})
++
++    for name, searcher_data in searchers.items():
++        metrics = searcher_data.get("metrics", {})
++        queries = searcher_data.get("queries", [])
++
++        # Basic metrics
++        r_at_1 = metrics.get("match", 0)
++        r_at_10 = metrics.get("recall_at_10", 0)
++        precision = metrics.get("precision", 0)
++        num_queries = metrics.get("num_queries", 0)
++
++        # Calculate stats from queries
++        failed_queries = sum(1 for q in queries if "error" in q)
++        elapsed_times = [q.get("elapsed_s", 0) for q in queries]
++        successful_elapsed_times = [q.get("elapsed_s", 0) for q in queries if "error" not in q]
++        total_elapsed = sum(elapsed_times)
++        min_elapsed = min(successful_elapsed_times) if successful_elapsed_times else 0
++        max_elapsed = max(successful_elapsed_times) if successful_elapsed_times else 0
++        avg_elapsed = (
++            sum(successful_elapsed_times) / len(successful_elapsed_times)
++            if successful_elapsed_times
++            else 0
++        )
++
++        # Estimate wall-clock time (assuming concurrency of 20)
++        concurrency = 20
++        est_wall_time = total_elapsed / concurrency if total_elapsed > 0 else 0
++
++        # LLM cost stats (may not be present for all searchers)
++        total_llm_cost = sum(q.get("cost_usd", 0) for q in queries)
++        queries_with_llm_cost = [q for q in queries if "cost_usd" in q]
++        avg_llm_cost = total_llm_cost / len(queries_with_llm_cost) if queries_with_llm_cost else 0
++
++        # Exa cost stats
++        total_exa_cost = sum(q.get("exa_cost_usd", 0) for q in queries)
++        queries_with_exa_cost = [q for q in queries if "exa_cost_usd" in q]
++        avg_exa_cost = total_exa_cost / len(queries_with_exa_cost) if queries_with_exa_cost else 0
++
++        # Total cost (LLM + Exa)
++        grand_total_cost = total_llm_cost + total_exa_cost
++
++        # Search calls (agentica-specific)
++        queries_with_searches = [q for q in queries if "search_calls" in q]
++        avg_searches = (
++            sum(q.get("search_calls", 0) for q in queries_with_searches)
++            / len(queries_with_searches)
++            if queries_with_searches
++            else 0
++        )
++
++        # Token stats (agentica-specific)
++        queries_with_tokens = [q for q in queries if "input_tokens" in q]
++        if queries_with_tokens:
++            avg_input = sum(q.get("input_tokens", 0) for q in queries_with_tokens) / len(
++                queries_with_tokens
++            )
++            avg_output = sum(q.get("output_tokens", 0) for q in queries_with_tokens) / len(
++                queries_with_tokens
++            )
++            token_str = f"{avg_input:.0f} / {avg_output:.0f}"
++        else:
++            token_str = "-"
++
++        # Format wall time as mm:ss if > 60s
++        def format_time(seconds: float) -> str:
++            if seconds >= 60:
++                mins = int(seconds // 60)
++                secs = int(seconds % 60)
++                return f"{mins}:{secs:02d}"
++            return f"{seconds:.1f}s"
++
++        # Format row
++        table.add_row(
++            name,
++            f"{r_at_1:.1%}",
++            f"{r_at_10:.1%}",
++            f"{precision:.1%}",
++            str(failed_queries),
++            format_time(total_elapsed),
++            format_time(est_wall_time),
++            f"{min_elapsed:.1f}s",
++            f"{max_elapsed:.1f}s",
++            f"{avg_elapsed:.2f}s",
++            f"${total_llm_cost:.4f}" if total_llm_cost > 0 else "-",
++            f"${avg_llm_cost:.4f}" if avg_llm_cost > 0 else "-",
++            f"${total_exa_cost:.4f}" if total_exa_cost > 0 else "-",
++            f"${avg_exa_cost:.4f}" if avg_exa_cost > 0 else "-",
++            f"${grand_total_cost:.4f}" if grand_total_cost > 0 else "-",
++            f"{avg_searches:.1f}" if avg_searches > 0 else "-",
++            token_str,
++        )
++
++    console.print(table)
++
++    # Print config info
++    config = data.get("config", {})
++    console.print(
++        f"\n[dim]Config: limit={config.get('limit')}, num_results={config.get('num_results')}[/dim]"
++    )
++    console.print("[dim]Note: Est. Wall assumes concurrency=20[/dim]")
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Analyze benchmark results")
++    parser.add_argument(
++        "results_file", nargs="?", default="results.json", help="Path to results.json"
++    )
++    args = parser.parse_args()
++
++    analyze_results(args.results_file)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/simple-people-benchmark/scripts/compare_searchers.py b/simple-people-benchmark/scripts/compare_searchers.py
+new file mode 100644
+index 0000000..c06405d
+--- /dev/null
++++ b/simple-people-benchmark/scripts/compare_searchers.py
+@@ -0,0 +1,201 @@
++#!/usr/bin/env python3
++"""Compare searchers from benchmark results - per-query analysis."""
++
++import argparse
++import json
++from pathlib import Path
++
++
++def load_results(path: str) -> dict:
++    """Load results from JSON file."""
++    with open(path) as f:
++        return json.load(f)
++
++
++def format_value(value: float | None, decimals: int = 2) -> str:
++    """Format a numeric value for display."""
++    if value is None:
++        return "-"
++    if isinstance(value, int) or value == int(value):
++        return str(int(value))
++    return f"{value:.{decimals}f}"
++
++
++def compute_query_metrics(query_data: dict) -> dict:
++    """Compute R@1, R@10, Precision for a single query from grades."""
++    grades = query_data.get("grades", [])
++    if not grades:
++        return {"r_at_1": None, "r_at_10": None, "precision": None}
++
++    # Sort by rank
++    sorted_grades = sorted(grades, key=lambda g: g.get("rank", 0))
++
++    # Find first match
++    first_match_rank = None
++    for g in sorted_grades:
++        if g.get("is_match", 0) >= 1.0:
++            first_match_rank = g.get("rank", sorted_grades.index(g) + 1)
++            break
++
++    # R@1: 1 if first result is a match
++    r_at_1 = 1.0 if first_match_rank == 1 else 0.0
++
++    # R@10: 1 if any result in top 10 is a match
++    r_at_10 = 1.0 if first_match_rank and first_match_rank <= 10 else 0.0
++
++    # Precision: fraction of results that are matches
++    n_results = len(sorted_grades)
++    n_matches = sum(1 for g in sorted_grades if g.get("is_match", 0) >= 1.0)
++    precision = n_matches / n_results if n_results > 0 else 0.0
++
++    return {"r_at_1": r_at_1, "r_at_10": r_at_10, "precision": precision}
++
++
++def print_query_comparison_table(results: dict, searchers_to_compare: list[str] | None = None):
++    """Print a per-query comparison table for the specified searchers."""
++    searchers_data = results.get("searchers", {})
++
++    # Filter searchers if specified
++    if searchers_to_compare:
++        searchers_data = {k: v for k, v in searchers_data.items() if k in searchers_to_compare}
++
++    if not searchers_data:
++        print("No searchers found to compare.")
++        return
++
++    searcher_names = sorted(searchers_data.keys())
++
++    # Build query index: query_id -> {searcher_name -> query_data}
++    query_index: dict[str, dict[str, dict]] = {}
++    for searcher_name, searcher_data in searchers_data.items():
++        for query in searcher_data.get("queries", []):
++            query_id = query.get("query_id")
++            if query_id:
++                if query_id not in query_index:
++                    query_index[query_id] = {}
++                # Add computed metrics to query data
++                query_with_metrics = dict(query)
++                query_with_metrics.update(compute_query_metrics(query))
++                query_index[query_id][searcher_name] = query_with_metrics
++
++    # Sort query IDs
++    sorted_query_ids = sorted(query_index.keys())
++
++    # Define metrics columns
++    metrics = [
++        ("num_results", "results", 0),
++        ("search_calls", "searches", 0),
++        ("elapsed_s", "time_s", 2),
++        ("r_at_1", "R@1", 1),
++        ("r_at_10", "R@10", 1),
++        ("precision", "Prec", 2),
++    ]
++
++    # Calculate column widths
++    query_id_width = max(
++        len("query_id"), max(len(qid) for qid in sorted_query_ids) if sorted_query_ids else 10
++    )
++    col_width = 10
++
++    # Build header - group searchers under each metric
++    header_parts = [f"{'query_id':<{query_id_width}}"]
++    for field, short_name, _ in metrics:
++        for searcher in searcher_names:
++            # Abbreviate searcher name if needed
++            abbrev = searcher[:col_width]
++            header_parts.append(f"{abbrev:>{col_width}}")
++
++    # Build metric group header
++    metric_header_parts = [" " * query_id_width]
++    for field, short_name, _ in metrics:
++        group_width = col_width * len(searcher_names) + 2 * (len(searcher_names) - 1)
++        metric_header_parts.append(f"{short_name:^{group_width}}")
++
++    print("  ".join(metric_header_parts))
++    header = "  ".join(header_parts)
++    print(header)
++    print("-" * len(header))
++
++    # Print rows
++    totals: dict[str, dict[str, float]] = {s: {} for s in searcher_names}
++    counts: dict[str, dict[str, int]] = {s: {} for s in searcher_names}
++
++    for query_id in sorted_query_ids:
++        row_parts = [f"{query_id:<{query_id_width}}"]
++
++        for field, _, decimals in metrics:
++            for searcher in searcher_names:
++                query_data = query_index[query_id].get(searcher, {})
++                value = query_data.get(field)
++                row_parts.append(f"{format_value(value, decimals):>{col_width}}")
++
++                # Accumulate totals
++                if value is not None:
++                    if field not in totals[searcher]:
++                        totals[searcher][field] = 0
++                        counts[searcher][field] = 0
++                    totals[searcher][field] += value
++                    counts[searcher][field] += 1
++
++        print("  ".join(row_parts))
++
++    # Print totals row
++    print("-" * len(header))
++    totals_parts = [f"{'TOTAL':<{query_id_width}}"]
++    for field, _, decimals in metrics:
++        for searcher in searcher_names:
++            value = totals[searcher].get(field)
++            totals_parts.append(f"{format_value(value, decimals):>{col_width}}")
++    print("  ".join(totals_parts))
++
++    # Print averages row
++    avg_parts = [f"{'AVG':<{query_id_width}}"]
++    for field, _, decimals in metrics:
++        for searcher in searcher_names:
++            total = totals[searcher].get(field)
++            count = counts[searcher].get(field, 0)
++            if total is not None and count > 0:
++                avg_parts.append(f"{format_value(total / count, decimals):>{col_width}}")
++            else:
++                avg_parts.append(f"{'-':>{col_width}}")
++    print("  ".join(avg_parts))
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="Compare searchers from benchmark results - per-query analysis."
++    )
++    parser.add_argument(
++        "results_file",
++        type=str,
++        help="Path to the results JSON file",
++    )
++    parser.add_argument(
++        "--searchers",
++        type=str,
++        nargs="+",
++        help="Searchers to compare (include in the table). If not specified, all searchers are included.",
++    )
++
++    args = parser.parse_args()
++
++    results_path = Path(args.results_file)
++    if not results_path.exists():
++        print(f"Error: File not found: {results_path}")
++        return 1
++
++    results = load_results(results_path)
++
++    print(f"Results from: {results_path.name}")
++    config = results.get("config", {})
++    if config:
++        print(f"Config: limit={config.get('limit')}, num_results={config.get('num_results')}")
++    print()
++
++    print_query_comparison_table(results, args.searchers)
++
++    return 0
++
++
++if __name__ == "__main__":
++    exit(main())
+diff --git a/simple-people-benchmark/scripts/run_failed.py b/simple-people-benchmark/scripts/run_failed.py
+new file mode 100644
+index 0000000..c88bb06
+--- /dev/null
++++ b/simple-people-benchmark/scripts/run_failed.py
+@@ -0,0 +1,354 @@
++#!/usr/bin/env python3
++"""Rerun failed queries from a benchmark results file."""
++
++import argparse
++import asyncio
++import json
++import time
++from pathlib import Path
++from typing import Any
++
++from rich.console import Console
++from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
++
++from src.benchmark import Query, load_queries
++from src.graders import PeopleGrader
++from src.metrics import compute_retrieval_metrics
++from src.searchers import Searcher
++from src.searchers.exa import CachingSearcher, ExaSearcher
++
++console = Console()
++
++
++def load_results(path: str) -> dict:
++    """Load results from JSON file."""
++    with open(path, encoding="utf-8") as f:
++        return json.load(f)
++
++
++def get_failed_queries(
++    searcher_data: dict,
++    exclude_errors: list[str],
++) -> list[str]:
++    """Get query IDs that failed with errors not in the exclude list."""
++    failed = []
++    for query in searcher_data.get("queries", []):
++        error_type = query.get("error_type")
++        if error_type and error_type not in exclude_errors:
++            failed.append(query["query_id"])
++    return failed
++
++
++def build_searcher(name: str, config: dict, shared_exa: Searcher | None = None) -> Searcher | None:
++    """Build a searcher from its name and config."""
++    try:
++        if name == "exa":
++            from src.searchers.exa import ExaSearcher
++
++            return ExaSearcher(
++                category=config.get("category"),
++                search_type=config.get("search_type", "fast"),
++            )
++        if name == "agentica":
++            from src.searchers.agentica import AgenticaSearcher
++
++            return AgenticaSearcher(
++                model=config.get("model"),
++                category=config.get("category"),
++            )
++        if name == "agentica_orderer":
++            from src.searchers.agentica_orderer import AgenticaOrderer
++
++            if shared_exa is None:
++                raise ValueError("agentica_orderer requires shared_exa")
++            return AgenticaOrderer(
++                exa_searcher=shared_exa,
++                model=config.get("model"),
++            )
++        if name == "openai":
++            from src.searchers.openai_searcher import OpenAISearcher
++
++            return OpenAISearcher(
++                model=config.get("model"),
++                category=config.get("category"),
++            )
++        if name == "openai_orderer":
++            from src.searchers.openai_orderer import OpenAIOrderer
++
++            if shared_exa is None:
++                raise ValueError("openai_orderer requires shared_exa")
++            return OpenAIOrderer(
++                exa_searcher=shared_exa,
++                model=config.get("model"),
++            )
++    except (ValueError, ImportError) as e:
++        console.print(f"[yellow]Cannot build {name}: {e}[/yellow]")
++    return None
++
++
++async def rerun_queries(
++    searcher: Searcher,
++    queries: list[Query],
++    num_results: int,
++    grader: PeopleGrader,
++    progress: Progress,
++    task_id: Any,
++) -> tuple[list[dict], list[dict]]:
++    """Rerun queries and return (grades, query_results)."""
++    grades: list[dict] = []
++    query_results: list[dict] = []
++    semaphore = asyncio.Semaphore(20)
++    grade_semaphore = asyncio.Semaphore(50)
++
++    async def grade_one(query: Query, rank: int, result: Any) -> dict:
++        async with grade_semaphore:
++            g = await grader.grade(query.text, result)
++        return {"query_id": query.query_id, "rank": rank, "is_match": g.scores.get("is_match", 0)}
++
++    async def process(q: Query):
++        try:
++            async with semaphore:
++                start_time = time.perf_counter()
++                try:
++                    response = await asyncio.wait_for(
++                        searcher.search(q.text, num_results),
++                        timeout=300.0,
++                    )
++                    results = response.results
++
++                    # Grade results
++                    query_grades = await asyncio.gather(
++                        *[grade_one(q, i, r) for i, r in enumerate(results, 1)]
++                    )
++                    grades.extend(query_grades)
++
++                    # Collect per-query stats
++                    query_data: dict[str, Any] = {
++                        "query_id": q.query_id,
++                        "num_results": len(results),
++                    }
++                    if response.query_stats:
++                        query_data.update(response.query_stats)
++
++                    # Add grading results
++                    matches = sum(1 for g in query_grades if g.get("is_match", 0) >= 1.0)
++                    query_data["matches"] = matches
++                    query_data["grades"] = [
++                        {"rank": g["rank"], "is_match": g["is_match"]} for g in query_grades
++                    ]
++                    query_data["elapsed_s"] = round(time.perf_counter() - start_time, 3)
++                    query_results.append(query_data)
++
++                except asyncio.TimeoutError:
++                    console.print(f"[red]Timeout for query: {q.query_id}[/red]")
++                    grades.append(
++                        {
++                            "query_id": q.query_id,
++                            "rank": 0,
++                            "is_match": 0,
++                            "error": "Search timed out after 5 minutes",
++                            "error_type": "TimeoutError",
++                        }
++                    )
++                    query_results.append(
++                        {
++                            "query_id": q.query_id,
++                            "num_results": 0,
++                            "error": "Search timed out after 5 minutes",
++                            "error_type": "TimeoutError",
++                            "elapsed_s": round(time.perf_counter() - start_time, 3),
++                        }
++                    )
++                except Exception as e:
++                    console.print(f"[red]Error for {q.query_id}: {e}[/red]")
++                    grades.append(
++                        {
++                            "query_id": q.query_id,
++                            "rank": 0,
++                            "is_match": 0,
++                            "error": str(e),
++                            "error_type": type(e).__name__,
++                        }
++                    )
++                    query_results.append(
++                        {
++                            "query_id": q.query_id,
++                            "num_results": 0,
++                            "error": str(e),
++                            "error_type": type(e).__name__,
++                            "elapsed_s": round(time.perf_counter() - start_time, 3),
++                        }
++                    )
++        finally:
++            progress.advance(task_id)
++
++    await asyncio.gather(*[process(q) for q in queries])
++    return grades, query_results
++
++
++async def main_async(args: argparse.Namespace) -> int:
++    results_path = Path(args.results_file)
++    if not results_path.exists():
++        console.print(f"[red]File not found: {results_path}[/red]")
++        return 1
++
++    results = load_results(results_path)
++    exclude_errors = args.exclude or []
++
++    console.print(f"[bold]Rerunning failed queries[/bold]")
++    console.print(f"  Input: {results_path}")
++    console.print(f"  Exclude errors: {exclude_errors}")
++    console.print()
++
++    # Load all queries from the dataset
++    all_queries = load_queries()
++    query_map = {q.query_id: q for q in all_queries}
++
++    config = results.get("config", {})
++    num_results = config.get("num_results", 10)
++    grader = PeopleGrader()
++
++    # Check if we need shared exa for orderers
++    orderer_names = {"agentica_orderer", "openai_orderer"}
++    searcher_names = list(results.get("searchers", {}).keys())
++    needs_shared_exa = any(name in orderer_names for name in searcher_names)
++
++    shared_exa: Searcher | None = None
++    if needs_shared_exa:
++        shared_exa = CachingSearcher(ExaSearcher(category="people"))
++        console.print("[dim]Using shared caching searcher for orderers[/dim]")
++
++    try:
++        # Process each searcher
++        for searcher_name, searcher_data in results.get("searchers", {}).items():
++            failed_query_ids = get_failed_queries(searcher_data, exclude_errors)
++
++            if not failed_query_ids:
++                console.print(f"[green]{searcher_name}: No failed queries to rerun[/green]")
++                continue
++
++            console.print(
++                f"[cyan]{searcher_name}: {len(failed_query_ids)} failed queries to rerun[/cyan]"
++            )
++
++            # Build the searcher
++            searcher = build_searcher(searcher_name, searcher_data.get("config", {}), shared_exa)
++            if searcher is None:
++                console.print(
++                    f"[yellow]Skipping {searcher_name}: could not build searcher[/yellow]"
++                )
++                continue
++
++            # Get Query objects for failed queries
++            failed_queries = [query_map[qid] for qid in failed_query_ids if qid in query_map]
++            if not failed_queries:
++                console.print(
++                    f"[yellow]{searcher_name}: Could not find query data for failed queries[/yellow]"
++                )
++                continue
++
++            # Rerun failed queries with progress
++            with Progress(
++                TextColumn("[cyan]{task.fields[name]:>15}[/cyan]"),
++                BarColumn(),
++                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
++                TextColumn("{task.completed}/{task.total}"),
++                TimeElapsedColumn(),
++                console=console,
++            ) as progress:
++                task_id = progress.add_task("", name=searcher_name, total=len(failed_queries))
++                new_grades, new_query_results = await rerun_queries(
++                    searcher, failed_queries, num_results, grader, progress, task_id
++                )
++
++            # Close searcher
++            await searcher.close()
++
++            # Merge results: replace failed queries with new results
++            new_results_map = {q["query_id"]: q for q in new_query_results}
++            merged_queries = []
++            for query in searcher_data.get("queries", []):
++                query_id = query["query_id"]
++                if query_id in new_results_map:
++                    merged_queries.append(new_results_map[query_id])
++                else:
++                    merged_queries.append(query)
++
++            # Update searcher data
++            searcher_data["queries"] = merged_queries
++
++            # Recompute metrics from all grades (existing + new)
++            # We need to rebuild grades from all query results
++            all_grades = []
++            for query in merged_queries:
++                query_id = query["query_id"]
++                grades_list = query.get("grades", [])
++                for g in grades_list:
++                    all_grades.append(
++                        {
++                            "query_id": query_id,
++                            "rank": g["rank"],
++                            "is_match": g["is_match"],
++                        }
++                    )
++                # If query has error, add a dummy grade
++                if query.get("error"):
++                    all_grades.append(
++                        {
++                            "query_id": query_id,
++                            "rank": 0,
++                            "is_match": 0,
++                        }
++                    )
++
++            # Recompute metrics
++            new_metrics = compute_retrieval_metrics(all_grades)
++            searcher_data["metrics"] = new_metrics.__dict__
++
++            # Count remaining failures
++            remaining_failures = sum(1 for q in merged_queries if q.get("error"))
++            console.print(
++                f"  [green]Reran {len(failed_queries)} queries, {remaining_failures} still failing[/green]"
++            )
++
++    finally:
++        if shared_exa:
++            await shared_exa.close()
++
++    # Save output
++    output_path = Path(args.output)
++    with open(output_path, "w", encoding="utf-8") as f:
++        json.dump(results, f, indent=2)
++    console.print(f"\n[green]Saved to {output_path}[/green]")
++
++    return 0
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Rerun failed queries from benchmark results.")
++    parser.add_argument(
++        "results_file",
++        type=str,
++        help="Path to the results JSON file",
++    )
++    parser.add_argument(
++        "--output",
++        "-o",
++        type=str,
++        required=True,
++        help="Output file for merged results",
++    )
++    parser.add_argument(
++        "--exclude",
++        type=str,
++        nargs="+",
++        default=[],
++        help="Error types to exclude from rerun (e.g., TimeoutError)",
++    )
++
++    args = parser.parse_args()
++    return asyncio.run(main_async(args))
++
++
++if __name__ == "__main__":
++    exit(main())
+diff --git a/simple-people-benchmark/src/__init__.py b/simple-people-benchmark/src/__init__.py
+index c8311e7..0c8e3cf 100644
+--- a/simple-people-benchmark/src/__init__.py
++++ b/simple-people-benchmark/src/__init__.py
+@@ -1,11 +1,21 @@
+ from .benchmark import Benchmark, BenchmarkConfig, load_queries
+ from .graders import PeopleGrader
+-from .searchers import BraveSearcher, ExaSearcher, ParallelSearcher, SearchResult, Searcher
++from .searchers import (
++    AgenticaSearcher,
++    BraveSearcher,
++    ExaSearcher,
++    OpenAISearcher,
++    ParallelSearcher,
++    SearchResult,
++    Searcher,
++)
+ 
+ __all__ = [
++    "AgenticaSearcher",
+     "Benchmark",
+     "BenchmarkConfig",
+     "load_queries",
++    "OpenAISearcher",
+     "PeopleGrader",
+     "Searcher",
+     "SearchResult",
+diff --git a/simple-people-benchmark/src/benchmark.py b/simple-people-benchmark/src/benchmark.py
+index 74b259b..b3b34d4 100644
+--- a/simple-people-benchmark/src/benchmark.py
++++ b/simple-people-benchmark/src/benchmark.py
+@@ -3,6 +3,7 @@ import asyncio
+ import json
+ import logging
+ import os
++import time
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Any
+@@ -14,7 +15,7 @@ from rich.table import Table
+ 
+ from .graders import PeopleGrader
+ from .metrics import compute_retrieval_metrics
+-from .searchers import SearchResult, Searcher
++from .searchers import SearchResponse, SearchResult, Searcher
+ 
+ console = Console()
+ logger = logging.getLogger(__name__)
+@@ -35,6 +36,7 @@ class BenchmarkConfig:
+     num_results: int = 10
+     output_file: str | None = None
+     enrich_exa_contents: bool = False
++    no_grading: bool = False
+ 
+ 
+ def load_queries(limit: int | None = None) -> list[Query]:
+@@ -82,12 +84,10 @@ async def fetch_exa_contents(urls: list[str], api_key: str | None = None) -> dic
+ async def enrich_results(results: list[SearchResult]) -> list[SearchResult]:
+     try:
+         contents = await fetch_exa_contents([r.url for r in results if r.url])
+-    except Exception as e:
++    except BaseException as e:
+         logger.warning(f"Content fetch failed: {e}")
+         return results
+-    return [
+-        SearchResult(r.url, r.title, contents.get(r.url, r.text), r.metadata) for r in results
+-    ]
++    return [SearchResult(r.url, r.title, contents.get(r.url, r.text), r.metadata) for r in results]
+ 
+ 
+ class Benchmark:
+@@ -100,7 +100,11 @@ class Benchmark:
+         async def grade_one(rank: int, r: SearchResult) -> dict:
+             async with self._grade_semaphore:
+                 g = await self.grader.grade(query.text, r)
+-            return {"query_id": query.query_id, "rank": rank, "is_match": g.scores.get("is_match", 0)}
++            return {
++                "query_id": query.query_id,
++                "rank": rank,
++                "is_match": g.scores.get("is_match", 0),
++            }
+ 
+         return await asyncio.gather(*[grade_one(i, r) for i, r in enumerate(results, 1)])
+ 
+@@ -111,20 +115,111 @@ class Benchmark:
+         config: BenchmarkConfig,
+         progress: Progress,
+         task_id: TaskID,
+-    ) -> list[dict]:
+-        grades = []
++    ) -> tuple[list[dict], list[dict]]:
++        """Run searcher and return (grades, query_results).
++
++        - grades: original format for metrics computation
++        - query_results: per-query stats for output
++        """
++        grades: list[dict] = []
++        query_results: list[dict] = []
+         semaphore = asyncio.Semaphore(20)
+ 
+         async def process(q: Query):
+-            async with semaphore:
+-                results = await searcher.search(q.text, config.num_results)
+-                if config.enrich_exa_contents:
+-                    results = await enrich_results(results)
+-                grades.extend(await self._grade(q, results))
++            try:
++                async with semaphore:
++                    start_time = time.perf_counter()
++                    try:
++                        # 5 minute timeout per search
++                        response: SearchResponse = await asyncio.wait_for(
++                            searcher.search(q.text, config.num_results),
++                            timeout=300.0,
++                        )
++                        results = response.results
++                        if config.enrich_exa_contents:
++                            results = await enrich_results(results)
++
++                        # Collect grades for metrics (skip if no_grading)
++                        if config.no_grading:
++                            # Add dummy grades with is_match=0 for metrics
++                            query_grades = [
++                                {"query_id": q.query_id, "rank": rank, "is_match": 0}
++                                for rank in range(1, len(results) + 1)
++                            ]
++                        else:
++                            query_grades = await self._grade(q, results)
++                        grades.extend(query_grades)
++
++                        # Collect per-query stats for output
++                        query_data: dict[str, Any] = {
++                            "query_id": q.query_id,
++                            "num_results": len(results),
++                        }
++                        if response.query_stats:
++                            query_data.update(response.query_stats)
++
++                        # Add grading results
++                        matches = sum(1 for g in query_grades if g.get("is_match", 0) >= 1.0)
++                        query_data["matches"] = matches
++                        query_data["grades"] = [
++                            {"rank": g["rank"], "is_match": g["is_match"]} for g in query_grades
++                        ]
++
++                        query_data["elapsed_s"] = round(time.perf_counter() - start_time, 3)
++                        query_results.append(query_data)
++                    except asyncio.TimeoutError:
++                        console.print(
++                            f"[red]Search timed out after 5min for query: '{q.text}'[/red]"
++                        )
++                        # Add timeout error grade for metrics
++                        grades.append(
++                            {
++                                "query_id": q.query_id,
++                                "rank": 0,
++                                "is_match": 0,
++                                "error": "Search timed out after 5 minutes",
++                                "error_type": "TimeoutError",
++                            }
++                        )
++                        # Add timeout error to query_results
++                        query_results.append(
++                            {
++                                "query_id": q.query_id,
++                                "num_results": 0,
++                                "error": "Search timed out after 5 minutes",
++                                "error_type": "TimeoutError",
++                                "elapsed_s": round(time.perf_counter() - start_time, 3),
++                            }
++                        )
++                    except BaseException as e:
++                        console.print(
++                            f"[red]Searcher {searcher.name} failed: '{e}' for query: '{q.text}'[/red]"
++                        )
++                        # Add error grade for metrics (rank=0, is_match=0)
++                        grades.append(
++                            {
++                                "query_id": q.query_id,
++                                "rank": 0,
++                                "is_match": 0,
++                                "error": str(e),
++                                "error_type": type(e).__name__,
++                            }
++                        )
++                        # Add error entry to query_results
++                        query_results.append(
++                            {
++                                "query_id": q.query_id,
++                                "num_results": 0,
++                                "error": str(e),
++                                "error_type": type(e).__name__,
++                                "elapsed_s": round(time.perf_counter() - start_time, 3),
++                            }
++                        )
++            finally:
+                 progress.advance(task_id)
+ 
+         await asyncio.gather(*[process(q) for q in queries])
+-        return grades
++        return grades, query_results
+ 
+     async def run(self, config: BenchmarkConfig | None = None) -> dict[str, Any]:
+         config = config or BenchmarkConfig()
+@@ -141,7 +236,15 @@ class Benchmark:
+         console.print(f"  Exa enrichment: {'on' if config.enrich_exa_contents else 'off'}")
+         console.print()
+ 
+-        results: dict[str, Any] = {"config": {"limit": config.limit}, "searchers": {}}
++        results: dict[str, Any] = {
++            "config": {
++                "limit": config.limit,
++                "num_results": config.num_results,
++                "enrich_exa_contents": config.enrich_exa_contents,
++                "grader": self.grader.get_config(),
++            },
++            "searchers": {},
++        }
+ 
+         with Progress(
+             TextColumn("[cyan]{task.fields[name]:>10}[/cyan]"),
+@@ -156,19 +259,26 @@ class Benchmark:
+                 for s in self.searchers
+             }
+ 
+-            async def run_one(searcher: Searcher) -> tuple[str, list[dict]]:
+-                grades = await self._run_searcher(
++            async def run_one(searcher: Searcher) -> tuple[str, list[dict], list[dict], dict]:
++                grades, query_results = await self._run_searcher(
+                     searcher, queries, config, progress, tasks[searcher.name]
+                 )
+-                return searcher.name, grades
++                return searcher.name, grades, query_results, searcher.get_config()
+ 
+-            all_grades = await asyncio.gather(*[run_one(s) for s in self.searchers])
++            all_results = await asyncio.gather(
++                *[run_one(s) for s in self.searchers], return_exceptions=True
++            )
+ 
+-        for name, grades in all_grades:
+-            if grades:
+-                results["searchers"][name] = {
+-                    "metrics": compute_retrieval_metrics(grades).__dict__
+-                }
++        for item in all_results:
++            if isinstance(item, BaseException):
++                console.print(f"[red]Error running searcher {item.searcher.name}: {item}[/red]")
++                continue
++            name, grades, query_results, searcher_config = item
++            results["searchers"][name] = {
++                "config": searcher_config,
++                "metrics": compute_retrieval_metrics(grades).__dict__,
++                "queries": query_results,
++            }
+ 
+         _print_summary(results)
+ 
+@@ -205,7 +315,9 @@ def _print_summary(results: dict[str, Any]):
+     console.print(t)
+ 
+ 
+-def _build_searcher(name: str) -> Searcher | None:
++def _build_searcher(
++    name: str, shared_exa: Searcher | None = None, logs_dir: str | None = None
++) -> Searcher | None:
+     try:
+         if name == "exa":
+             from .searchers.exa import ExaSearcher
+@@ -219,6 +331,26 @@ def _build_searcher(name: str) -> Searcher | None:
+             from .searchers.parallel import ParallelSearcher
+ 
+             return ParallelSearcher(source_policy={"include_domains": ["linkedin.com"]})
++        if name == "agentica":
++            from .searchers.agentica import AgenticaSearcher
++
++            return AgenticaSearcher(category="people", logs_dir=logs_dir)
++        if name == "agentica_orderer":
++            from .searchers.agentica_orderer import AgenticaOrderer
++
++            if shared_exa is None:
++                raise ValueError("agentica_orderer requires shared_exa searcher")
++            return AgenticaOrderer(exa_searcher=shared_exa, logs_dir=logs_dir)
++        if name == "openai":
++            from .searchers.openai_searcher import OpenAISearcher
++
++            return OpenAISearcher(category="people")
++        if name == "openai_orderer":
++            from .searchers.openai_orderer import OpenAIOrderer
++
++            if shared_exa is None:
++                raise ValueError("openai_orderer requires shared_exa searcher")
++            return OpenAIOrderer(exa_searcher=shared_exa)
+     except (ValueError, ImportError) as e:
+         console.print(f"[yellow]{name}: {e}[/yellow]")
+     return None
+@@ -245,13 +377,37 @@ def main():
+     parser.add_argument(
+         "--searchers", nargs="+", help="Searchers to use (default: exa, brave, parallel)"
+     )
++    parser.add_argument(
++        "--no-grading",
++        action="store_true",
++        help="Skip grading (no OpenAI calls, all results scored as 0)",
++    )
+     args = parser.parse_args()
+ 
+     searcher_names = args.searchers or ["exa", "brave", "parallel"]
+-    searchers = [s for name in searcher_names if (s := _build_searcher(name))]
++
++    # Create shared caching searcher for orderers to ensure they get identical results
++    orderer_names = {"agentica_orderer", "openai_orderer"}
++    has_orderers = any(name in orderer_names for name in searcher_names)
++    shared_exa: Searcher | None = None
++
++    if has_orderers:
++        from .searchers.exa import CachingSearcher, ExaSearcher
++
++        shared_exa = CachingSearcher(ExaSearcher(category="people"))
++        console.print("[dim]Using shared caching searcher for orderers[/dim]")
++
++    # Compute logs_dir from output file: strip extension, use as directory name
++    logs_dir: str | None = None
++    if args.output:
++        logs_dir = "./" + Path(args.output).stem
++
++    searchers = [s for name in searcher_names if (s := _build_searcher(name, shared_exa, logs_dir))]
+ 
+     if not searchers:
+         console.print("[red]No searchers available![/red]")
++        if shared_exa:
++            asyncio.run(shared_exa.close())
+         return
+ 
+     config = BenchmarkConfig(
+@@ -259,8 +415,17 @@ def main():
+         num_results=args.num_results,
+         output_file=args.output,
+         enrich_exa_contents=args.enrich_exa_contents,
++        no_grading=args.no_grading,
+     )
+-    asyncio.run(Benchmark(searchers).run(config))
++
++    async def run_benchmark():
++        try:
++            await Benchmark(searchers).run(config)
++        finally:
++            if shared_exa:
++                await shared_exa.close()
++
++    asyncio.run(run_benchmark())
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/simple-people-benchmark/src/graders/people.py b/simple-people-benchmark/src/graders/people.py
+index 0e425ae..b57f7ac 100644
+--- a/simple-people-benchmark/src/graders/people.py
++++ b/simple-people-benchmark/src/graders/people.py
+@@ -58,6 +58,12 @@ class PeopleGrader:
+         self.temperature = temperature
+         self.client = AsyncOpenAI(api_key=api_key)
+ 
++    def get_config(self) -> dict[str, float | str]:
++        return {
++            "model": self.model,
++            "temperature": self.temperature,
++        }
++
+     async def grade(self, query: str, result: SearchResult) -> GradeResult:
+         try:
+             response = await self.client.beta.chat.completions.parse(
+diff --git a/simple-people-benchmark/src/searchers/__init__.py b/simple-people-benchmark/src/searchers/__init__.py
+index aaddfdf..18bc5e3 100644
+--- a/simple-people-benchmark/src/searchers/__init__.py
++++ b/simple-people-benchmark/src/searchers/__init__.py
+@@ -1,13 +1,24 @@
+-from .base import SearchResult, Searcher
++from .agentica import AgenticaSearcher
++from .agentica_orderer import AgenticaOrderer
++from .base import SearchResponse, SearchResult, Searcher, estimate_cost, get_model_pricing
+ from .brave import BraveSearcher
+-from .exa import ExaSearcher
++from .exa import CachingSearcher, ExaSearcher
++from .openai_orderer import OpenAIOrderer
++from .openai_searcher import OpenAISearcher
+ from .parallel import ParallelSearcher
+ 
+ __all__ = [
++    "AgenticaSearcher",
++    "AgenticaOrderer",
++    "CachingSearcher",
++    "OpenAISearcher",
++    "OpenAIOrderer",
+     "Searcher",
++    "SearchResponse",
+     "SearchResult",
+     "BraveSearcher",
+     "ExaSearcher",
+     "ParallelSearcher",
++    "estimate_cost",
++    "get_model_pricing",
+ ]
+-
+diff --git a/simple-people-benchmark/src/searchers/agentica.py b/simple-people-benchmark/src/searchers/agentica.py
+new file mode 100644
+index 0000000..1f5732b
+--- /dev/null
++++ b/simple-people-benchmark/src/searchers/agentica.py
+@@ -0,0 +1,165 @@
++import asyncio
++import os
++from dataclasses import dataclass
++from typing import Any
++
++from agentica import spawn
++from agentica.logging import AgentListener
++from agentica.logging.loggers import StandardLogger
++
++from .base import SearchResponse, SearchResult, Searcher, estimate_cost
++from .exa import ExaSearcher
++
++
++class AgenticaSearcher(Searcher):
++    name = "agentica"
++    # Class-level lock to serialize spawn operations (avoids agentica websocket race condition)
++    _spawn_lock: asyncio.Lock | None = None
++
++    def __init__(
++        self,
++        exa_api_key: str | None = None,
++        model: str | None = None,
++        category: str | None = "people",
++        logs_dir: str | None = None,
++    ):
++        self.exa_api_key = exa_api_key or os.getenv("EXA_API_KEY")
++        if not self.exa_api_key:
++            raise ValueError("EXA_API_KEY required - get one at https://exa.ai")
++
++        self.model = model or os.getenv(
++            "AGENTICA_MODEL", "openrouter:google/gemini-3-flash-preview"
++        )
++        self.category = category
++        self._logs_dir = logs_dir or "./logs"
++        self._exa_searcher = ExaSearcher(
++            api_key=self.exa_api_key,
++            category=self.category,
++        )
++        if AgenticaSearcher._spawn_lock is None:
++            AgenticaSearcher._spawn_lock = asyncio.Lock()
++        print(f"[agentica] Using model: {self.model}")
++
++    def _get_listener(self) -> AgentListener:
++        return AgentListener(StandardLogger(logs_dir=self._logs_dir))
++
++    async def _search_impl(self, query: str, num_results: int = 10) -> SearchResponse:
++        search_call_count = 0
++        exa_total_cost = 0.0
++
++        @dataclass
++        class SearchResults:
++            results: list[SearchResult]
++
++            def __post_init__(self):
++                if len(self.results) != num_results:
++                    raise ValueError(f"Expected {num_results} results, got {len(self.results)}")
++
++            def __str__(self) -> str:
++                return "\n".join(
++                    f"Result #{i + 1}: URL: {result.url}, Title: {result.title}, Text: {result.text[:500]}"
++                    for i, result in enumerate(self.results)
++                )
++
++            def __getitem__(self, index: int) -> SearchResult:
++                return self.results[index]
++
++            def __len__(self) -> int:
++                return len(self.results)
++
++        async def exa_search(search_query: str) -> SearchResults:
++            """
++            Search for information using Exa search engine. Can only be called once.
++            Search supports Advanced Search Operators and filters.
++            This function logically behaves as a websearch tool.
++
++            Args:
++                search_query: The search query to find relevant results.
++
++            Returns:
++                SearchResults containing exactly {num_results} results with url, title, and text content.
++            """
++            nonlocal search_call_count, exa_total_cost
++            if search_call_count >= 1:
++                raise ValueError("Exa search can only be called once.")
++            search_call_count += 1
++            response = await self._exa_searcher.search(search_query, num_results)
++            if "exa_cost_usd" in response.query_stats:
++                exa_total_cost += response.query_stats["exa_cost_usd"]
++            return SearchResults(results=response.results)
++
++        # Serialize only the spawn operation to avoid agentica websocket race condition
++        # The actual agent.call() runs in parallel after spawn completes
++        assert self._spawn_lock is not None
++        async with self._spawn_lock:
++            agent = await spawn(
++                premise=f"""
++You are a search assistant that helps find people's professional profiles.
++
++# Task
++You will be given a query and you need to find the {num_results} most relevant people's professional profiles matching the query.
++
++Your workflow outline:
++
++```python
++query_to_search = '...' # construct the query to search based on the query given; you are allowed to use your knowledge (e.g. existing company names) to improve search results relevance
++```
++
++```python
++result = await search(..) # search function can be called only once
++print(result) # Use print(result) to inspect the results only, avoid print(result.results)
++# NEVER `return` here. `return` from REPL is expected to return final result
++```
++
++As many times as needed:
++```python
++... # analyze the results, order by relevance from the most relevant to the least relevant
++```
++
++Only after all output of code blocks above is inspected and you are sure you got {num_results} results sorted by relevance from the most relevant to the least relevant, return:
++```python
++return result.results
++```
++""",
++                model=self.model,
++                scope={
++                    "search": exa_search,
++                    "SearchResult": SearchResult,
++                },
++                listener=self._get_listener,
++            )
++
++        # Agent calls can run in parallel
++        results: list[SearchResult] = await agent.call(
++            list[SearchResult],
++            f"Query: {query}\nReturn the {num_results} most relevant results matching the query sorted by relevance.",
++        )
++
++        # Collect usage stats
++        usage = agent.last_usage()
++        query_stats: dict[str, Any] = {
++            "search_calls": search_call_count,
++            "input_tokens": usage.input_tokens,
++            "output_tokens": usage.output_tokens,
++            "total_tokens": usage.total_tokens,
++        }
++        cost = estimate_cost(self.model, usage.input_tokens, usage.output_tokens)
++        if cost is not None:
++            query_stats["cost_usd"] = cost
++        if exa_total_cost > 0:
++            query_stats["exa_cost_usd"] = exa_total_cost
++
++        return SearchResponse(results=results[:num_results], query_stats=query_stats)
++
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
++        return await self._search_impl(query, num_results)
++
++    async def close(self):
++        await self._exa_searcher.close()
++
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "model": self.model,
++            "category": self.category,
++            "exa_config": self._exa_searcher.get_config(),
++        }
+diff --git a/simple-people-benchmark/src/searchers/agentica_orderer.py b/simple-people-benchmark/src/searchers/agentica_orderer.py
+new file mode 100644
+index 0000000..e827885
+--- /dev/null
++++ b/simple-people-benchmark/src/searchers/agentica_orderer.py
+@@ -0,0 +1,129 @@
++import asyncio
++import os
++from dataclasses import dataclass
++from typing import Any
++
++from agentica import spawn
++from agentica.logging import AgentListener
++from agentica.logging.loggers import StandardLogger
++
++from .base import SearchResponse, SearchResult, Searcher, estimate_cost
++
++
++class AgenticaOrderer(Searcher):
++    name = "agentica_orderer"
++    # Class-level lock to serialize spawn operations (avoids agentica websocket race condition)
++    _spawn_lock: asyncio.Lock = asyncio.Lock()
++
++    def __init__(
++        self,
++        exa_searcher: Searcher,
++        model: str | None = None,
++        logs_dir: str | None = None,
++    ):
++        self.model = model or os.getenv(
++            "AGENTICA_MODEL", "openrouter:google/gemini-3-flash-preview"
++        )
++        self._exa_searcher = exa_searcher
++        self._logs_dir = logs_dir or "./logs"
++        print(f"[agentica_orderer] Using model: {self.model}")
++
++    def _get_listener(self) -> AgentListener:
++        return AgentListener(StandardLogger(logs_dir=self._logs_dir))
++
++    async def _search_impl(self, query: str, num_results: int = 10) -> SearchResponse:
++        # First, get results from Exa
++        exa_response = await self._exa_searcher.search(query, num_results)
++        exa_results = exa_response.results
++        exa_cost = exa_response.query_stats.get("exa_cost_usd", 0.0)
++
++        @dataclass
++        class SearchResults:
++            results: list[SearchResult]
++
++            def __post_init__(self):
++                if len(self.results) != num_results:
++                    raise ValueError(f"Expected {num_results} results, got {len(self.results)}")
++
++            def __str__(self) -> str:
++                return "\n".join(
++                    f"Result #{i + 1}: URL: {result.url}, Title: {result.title}, Text: {result.text[:500]}"
++                    for i, result in enumerate(self.results)
++                )
++
++            def __getitem__(self, index: int) -> SearchResult:
++                return self.results[index]
++
++            def __len__(self) -> int:
++                return len(self.results)
++
++        results = SearchResults(results=exa_results)
++
++        # Serialize only the spawn operation to avoid agentica websocket race condition
++        async with AgenticaOrderer._spawn_lock:
++            agent = await spawn(
++                premise=f"""
++You are a search assistant that helps reorder search results by relevance.
++
++# Task
++You will be given a query and {num_results} search results for this query. Your goal is to reorder these results by relevance from the most relevant to the least relevant.
++
++Your workflow outline:
++
++```python
++print(results) # Use print(results) to inspect the results only, avoid printing fields of `results` object
++# NEVER `return` here. `return` from REPL is expected to return final result
++```
++
++As many times as needed:
++```python
++... # analyze the results, reorder
++```
++
++Only after all output of code blocks above is inspected and you are sure you got {num_results} results sorted by relevance from the most relevant to the least relevant, return:
++```python
++return result
++```
++
++""",
++                model=self.model,
++                scope={
++                    "query": query,
++                    "results": results,
++                    "SearchResult": SearchResult,
++                },
++                listener=self._get_listener,
++            )
++
++        # Agent calls can run in parallel
++        reordered_results: list[SearchResult] = await agent.call(
++            list[SearchResult],
++            f"Query: {query}\nReturn all {num_results} results reordered by relevance.",
++        )
++
++        # Collect usage stats
++        usage = agent.last_usage()
++        query_stats: dict[str, Any] = {
++            "input_tokens": usage.input_tokens,
++            "output_tokens": usage.output_tokens,
++            "total_tokens": usage.total_tokens,
++        }
++        cost = estimate_cost(self.model, usage.input_tokens, usage.output_tokens)
++        if cost is not None:
++            query_stats["cost_usd"] = cost
++        if exa_cost > 0:
++            query_stats["exa_cost_usd"] = exa_cost
++
++        return SearchResponse(results=reordered_results[:num_results], query_stats=query_stats)
++
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
++        return await self._search_impl(query, num_results)
++
++    async def close(self):
++        pass  # exa_searcher is managed externally
++
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "model": self.model,
++            "exa_config": self._exa_searcher.get_config(),
++        }
+diff --git a/simple-people-benchmark/src/searchers/base.py b/simple-people-benchmark/src/searchers/base.py
+index 20b456b..2094193 100644
+--- a/simple-people-benchmark/src/searchers/base.py
++++ b/simple-people-benchmark/src/searchers/base.py
+@@ -3,18 +3,64 @@ from dataclasses import dataclass, field
+ from typing import Any
+ 
+ 
++def get_model_pricing(model: str) -> tuple[float, float] | None:
++    """Get pricing per million tokens for a model: (input_cost, output_cost).
++
++    Returns None if model is not found in pricing table.
++    """
++    # Pricing per million tokens: (input_cost, output_cost)
++    pricing = {
++        # Google
++        "gemini-3-flash-preview": (0.50, 3.00),
++        "gemini-2.5-flash-lite": (0.10, 0.40),
++        "gemini-2.5-flash": (0.30, 2.50),
++        # Meta
++        "llama-4-scout": (0.08, 0.30),
++        # Qwen
++        "qwen3-235b-a22b-thinking-2507": (0.11, 0.60),
++        "qwen3-30b-a3b-instruct-2507": (0.08, 0.33),
++        # OpenAI
++        "gpt-5-nano": (0.05, 0.40),
++    }
++    for model_key, prices in pricing.items():
++        if model_key in model:
++            return prices
++    return None
++
++
++def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
++    """Estimate cost in USD based on model and token counts."""
++    pricing = get_model_pricing(model)
++    if pricing is None:
++        return None
++    input_price, output_price = pricing
++    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
++
++
+ @dataclass
+ class SearchResult:
+-    url: str = ""
+-    title: str = ""
+-    text: str = ""
++    url: str
++    title: str
++    text: str
+     metadata: dict[str, Any] = field(default_factory=dict)
+ 
+ 
++@dataclass
++class SearchResponse:
++    """Response from a search query, with optional per-query stats."""
++
++    results: list[SearchResult]
++    query_stats: dict[str, Any] = field(default_factory=dict)
++    """Optional per-query stats like cost, latency, tokens used, etc."""
++
++
+ class Searcher(ABC):
+     name: str = "base"
+ 
+     @abstractmethod
+-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+         pass
+ 
++    def get_config(self) -> dict[str, Any]:
++        """Return searcher configuration for logging/results."""
++        return {}
+diff --git a/simple-people-benchmark/src/searchers/brave.py b/simple-people-benchmark/src/searchers/brave.py
+index 57f1001..61d9495 100644
+--- a/simple-people-benchmark/src/searchers/brave.py
++++ b/simple-people-benchmark/src/searchers/brave.py
+@@ -3,7 +3,7 @@ from typing import Any
+ 
+ import httpx
+ 
+-from .base import SearchResult, Searcher
++from .base import SearchResponse, SearchResult, Searcher
+ 
+ 
+ class BraveSearcher(Searcher):
+@@ -18,16 +18,14 @@ class BraveSearcher(Searcher):
+     ):
+         self.api_key = api_key or os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY")
+         if not self.api_key:
+-            raise ValueError(
+-                "Brave API key required - set BRAVE_SEARCH_API_KEY or pass api_key"
+-            )
++            raise ValueError("Brave API key required - set BRAVE_SEARCH_API_KEY or pass api_key")
+ 
+         self.base_url = base_url
+         self.site_filter = site_filter
+         self.brave_args = brave_args
+         self._client = httpx.AsyncClient(timeout=60.0)
+ 
+-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+         search_query = query
+         if self.site_filter:
+             search_query = f"site:{self.site_filter} {search_query}"
+@@ -80,8 +78,14 @@ class BraveSearcher(Searcher):
+                 )
+             )
+ 
+-        return results
++        return SearchResponse(results=results)
+ 
+     async def close(self):
+         await self._client.aclose()
+ 
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "base_url": self.base_url,
++            "site_filter": self.site_filter,
++            **self.brave_args,
++        }
+diff --git a/simple-people-benchmark/src/searchers/exa.py b/simple-people-benchmark/src/searchers/exa.py
+index 63334ce..bce390e 100644
+--- a/simple-people-benchmark/src/searchers/exa.py
++++ b/simple-people-benchmark/src/searchers/exa.py
+@@ -3,7 +3,42 @@ from typing import Any
+ 
+ import httpx
+ 
+-from .base import SearchResult, Searcher
++from .base import SearchResponse, SearchResult, Searcher
++
++
++class CachingSearcher(Searcher):
++    """Wrapper that caches search results by (query, num_results) to ensure
++    multiple searchers get exactly the same results for the same query."""
++
++    name = "caching"
++
++    def __init__(self, searcher: Searcher):
++        self._searcher = searcher
++        self._cache: dict[tuple[str, int], SearchResponse] = {}
++
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
++        key = (query, num_results)
++        if key not in self._cache:
++            self._cache[key] = await self._searcher.search(query, num_results)
++        return self._cache[key]
++
++    async def close(self):
++        await self._searcher.close()
++
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "cached": True,
++            "inner": self._searcher.get_config(),
++        }
++
++    def clear_cache(self):
++        """Clear the cache."""
++        self._cache.clear()
++
++    @property
++    def cache_size(self) -> int:
++        """Return the number of cached queries."""
++        return len(self._cache)
+ 
+ 
+ class ExaSearcher(Searcher):
+@@ -27,7 +62,7 @@ class ExaSearcher(Searcher):
+         self.search_type = search_type
+         self._client = httpx.AsyncClient(timeout=60.0)
+ 
+-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+         payload: dict[str, Any] = {
+             "query": query,
+             "numResults": num_results,
+@@ -66,8 +101,20 @@ class ExaSearcher(Searcher):
+                 )
+             )
+ 
+-        return results
++        query_stats: dict[str, Any] = {}
++        cost_dollars = data.get("costDollars", {})
++        if "total" in cost_dollars:
++            query_stats["exa_cost_usd"] = cost_dollars["total"]
++
++        return SearchResponse(results=results, query_stats=query_stats)
+ 
+     async def close(self):
+         await self._client.aclose()
+ 
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "base_url": self.base_url,
++            "include_text": self.include_text,
++            "category": self.category,
++            "search_type": self.search_type,
++        }
+diff --git a/simple-people-benchmark/src/searchers/openai_orderer.py b/simple-people-benchmark/src/searchers/openai_orderer.py
+new file mode 100644
+index 0000000..7d39a3c
+--- /dev/null
++++ b/simple-people-benchmark/src/searchers/openai_orderer.py
+@@ -0,0 +1,218 @@
++import json
++import os
++from pathlib import Path
++from typing import Any
++
++from openai import AsyncOpenAI
++from pydantic import BaseModel, ValidationError
++
++from .base import SearchResponse, SearchResult, Searcher, estimate_cost
++
++
++class SearchResultSchema(BaseModel):
++    """Pydantic model for validating search result output."""
++
++    url: str
++    title: str
++    text: str
++
++
++# Global counter for agent runs
++_agent_counter = 0
++
++
++class OpenAIOrderer(Searcher):
++    name = "openai_orderer"
++
++    def __init__(
++        self,
++        exa_searcher: Searcher,
++        api_key: str | None = None,
++        model: str | None = None,
++    ):
++        self.model = model or os.getenv("OPENAI_MODEL", "google/gemini-3-flash-preview")
++        self._exa_searcher = exa_searcher
++
++        # Use OpenAI directly for OpenAI models, OpenRouter for everything else
++        is_openai_model = self.model.startswith(("gpt-", "o1-", "o3-", "text-", "davinci"))
++        if is_openai_model:
++            api_key = api_key or os.getenv("OPENAI_API_KEY")
++            if not api_key:
++                raise ValueError("OPENAI_API_KEY required")
++            self._client = AsyncOpenAI(api_key=api_key)
++        else:
++            api_key = api_key or os.getenv("OPENROUTER_API_KEY")
++            if not api_key:
++                raise ValueError("OPENROUTER_API_KEY required for non-OpenAI models")
++            self._client = AsyncOpenAI(
++                api_key=api_key,
++                base_url="https://openrouter.ai/api/v1",
++            )
++
++        print(f"[openai_orderer] Using model: {self.model}")
++
++    async def _search_impl(self, query: str, num_results: int = 10) -> SearchResponse:
++        # First, get results from Exa
++        exa_response = await self._exa_searcher.search(query, num_results)
++        exa_results = exa_response.results
++        exa_cost = exa_response.query_stats.get("exa_cost_usd", 0.0)
++
++        # Format results for the model
++        results_for_model = [
++            {
++                "index": i,
++                "url": r.url,
++                "title": r.title,
++                "text": r.text if r.text else "",
++            }
++            for i, r in enumerate(exa_results)
++        ]
++
++        system_prompt = f"""
++You are a search assistant that helps reorder search results by relevance.
++
++# Task
++You will be given a query and {num_results} search results for this query. Your goal is to reorder these results by relevance from the most relevant to the least relevant.
++
++# Output
++Respond with a JSON array of the {num_results} results sorted by relevance from the most relevant to the least relevant, where each result in the array is an object of the following schema:
++{{
++  "type": "object",
++  "properties": {{
++    "url": {{
++      "type": "string"
++    }},
++    "title": {{
++      "type": "string"
++    }},
++    "text": {{
++      "type": "string"
++    }}
++  }},
++  "required": ["url", "title", "text"],
++  "additionalProperties": false
++}}
++
++Do NOT list the results in any other format than the JSON array.
++"""
++
++        messages: list[dict[str, Any]] = [
++            {"role": "system", "content": system_prompt},
++            {
++                "role": "user",
++                "content": f"Query: {query}\n\nResults to reorder:\n{json.dumps(results_for_model, indent=2)}\n\nReturn all {num_results} results reordered by relevance as a JSON array.",
++            },
++        ]
++
++        response = await self._client.chat.completions.create(
++            model=self.model,
++            messages=messages,
++        )
++
++        # Track token usage
++        total_input_tokens = 0
++        total_output_tokens = 0
++        if response.usage:
++            total_input_tokens = response.usage.prompt_tokens
++            total_output_tokens = response.usage.completion_tokens
++
++        choice = response.choices[0]
++        final_content = choice.message.content or "[]"
++
++        # Log conversation
++        messages.append({"role": "assistant", "content": final_content})
++        self._log_conversation(query, messages)
++
++        # Parse final response to extract results
++        results = self._parse_results(final_content, exa_results)
++
++        # Collect usage stats
++        query_stats: dict[str, Any] = {
++            "input_tokens": total_input_tokens,
++            "output_tokens": total_output_tokens,
++            "total_tokens": total_input_tokens + total_output_tokens,
++        }
++        cost = estimate_cost(self.model, total_input_tokens, total_output_tokens)
++        if cost is not None:
++            query_stats["cost_usd"] = cost
++        if exa_cost > 0:
++            query_stats["exa_cost_usd"] = exa_cost
++
++        return SearchResponse(results=results[:num_results], query_stats=query_stats)
++
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
++        return await self._search_impl(query, num_results)
++
++    def _log_conversation(self, query: str, messages: list[dict[str, Any]]) -> None:
++        """Log the full conversation to a file."""
++        global _agent_counter
++        _agent_counter += 1
++
++        logs_dir = Path("./logs")
++        logs_dir.mkdir(exist_ok=True)
++
++        log_file = logs_dir / f"openai-orderer-{_agent_counter}.log"
++        with open(log_file, "w", encoding="utf-8") as f:
++            f.write(f"Query: {query}\n")
++            f.write(f"Model: {self.model}\n")
++            f.write("=" * 80 + "\n\n")
++
++            for msg in messages:
++                role = msg.get("role", "unknown")
++                f.write(f"[{role.upper()}]\n")
++                f.write(msg.get("content", "") + "\n")
++                f.write("\n" + "-" * 40 + "\n\n")
++
++    def _parse_results(
++        self, content: str, original_results: list[SearchResult]
++    ) -> list[SearchResult]:
++        """Parse the response content to extract reordered SearchResult objects.
++
++        Falls back to original results if parsing fails.
++        """
++        # Look for JSON array in the content
++        start = content.find("[")
++        end = content.rfind("]") + 1
++        if start == -1 or end <= start:
++            raise ValueError(f"No JSON array found in response: {content[:200]}")
++
++        json_str = content[start:end]
++        try:
++            data = json.loads(json_str)
++        except json.JSONDecodeError as e:
++            raise ValueError(f"Invalid JSON in response: {e}") from e
++
++        if not isinstance(data, list):
++            raise ValueError(f"Expected JSON array, got {type(data).__name__}")
++
++        # Build URL lookup from original results to preserve full text
++        url_to_result = {r.url: r for r in original_results}
++
++        results = []
++        for i, item in enumerate(data):
++            try:
++                validated = SearchResultSchema.model_validate(item)
++                # Try to find original result by URL to preserve full text
++                if validated.url in url_to_result:
++                    results.append(url_to_result[validated.url])
++                else:
++                    results.append(
++                        SearchResult(
++                            url=validated.url,
++                            title=validated.title,
++                            text=validated.text,
++                        )
++                    )
++            except ValidationError as e:
++                raise ValueError(f"Invalid result at index {i}: {e}") from e
++
++        return results
++
++    async def close(self):
++        await self._client.close()
++
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "model": self.model,
++            "exa_config": self._exa_searcher.get_config(),
++        }
+diff --git a/simple-people-benchmark/src/searchers/openai_searcher.py b/simple-people-benchmark/src/searchers/openai_searcher.py
+new file mode 100644
+index 0000000..757e2c8
+--- /dev/null
++++ b/simple-people-benchmark/src/searchers/openai_searcher.py
+@@ -0,0 +1,304 @@
++import json
++import os
++from pathlib import Path
++from typing import Any
++
++from openai import AsyncOpenAI
++from pydantic import BaseModel, ValidationError
++
++from .base import SearchResponse, SearchResult, Searcher, estimate_cost
++from .exa import ExaSearcher
++
++
++class SearchResultSchema(BaseModel):
++    """Pydantic model for validating search result output."""
++
++    url: str
++    title: str
++    text: str
++
++
++# Global counter for agent runs
++_agent_counter = 0
++
++
++# Tool definitions for function calling
++SEARCH_TOOL = {
++    "type": "function",
++    "function": {
++        "name": "search",
++        "description": "Search for information using Exa search engine. Can only be called once.",
++        "parameters": {
++            "type": "object",
++            "properties": {
++                "search_query": {
++                    "type": "string",
++                    "description": "The search query to find relevant results.",
++                }
++            },
++            "required": ["search_query"],
++        },
++    },
++}
++
++
++class OpenAISearcher(Searcher):
++    name = "openai"
++
++    def __init__(
++        self,
++        exa_api_key: str | None = None,
++        api_key: str | None = None,
++        model: str | None = None,
++        category: str | None = "people",
++    ):
++        self.exa_api_key = exa_api_key or os.getenv("EXA_API_KEY")
++        if not self.exa_api_key:
++            raise ValueError("EXA_API_KEY required - get one at https://exa.ai")
++
++        self.model = model or os.getenv("OPENAI_MODEL", "google/gemini-3-flash-preview")
++        self.category = category
++
++        # Use OpenAI directly for OpenAI models, OpenRouter for everything else
++        is_openai_model = self.model.startswith(("gpt-", "o1-", "o3-", "text-", "davinci"))
++        if is_openai_model:
++            api_key = api_key or os.getenv("OPENAI_API_KEY")
++            if not api_key:
++                raise ValueError("OPENAI_API_KEY required")
++            self._client = AsyncOpenAI(api_key=api_key)
++        else:
++            api_key = api_key or os.getenv("OPENROUTER_API_KEY")
++            if not api_key:
++                raise ValueError("OPENROUTER_API_KEY required for non-OpenAI models")
++            self._client = AsyncOpenAI(
++                api_key=api_key,
++                base_url="https://openrouter.ai/api/v1",
++            )
++
++        self._exa_searcher = ExaSearcher(
++            api_key=self.exa_api_key,
++            category=self.category,
++        )
++        print(f"[openai] Using model: {self.model}")
++
++    async def _search_impl(self, query: str, num_results: int = 10) -> SearchResponse:
++        search_call_count = 0
++        exa_total_cost = 0.0
++        total_input_tokens = 0
++        total_output_tokens = 0
++
++        async def exa_search(search_query: str) -> list[dict[str, Any]]:
++            """
++            Execute search via Exa and return results as dicts. Can only be called once.
++            """
++            nonlocal search_call_count, exa_total_cost
++            search_call_count += 1
++            if search_call_count > 1:
++                raise ValueError("Exa search can only be called once.")
++            response = await self._exa_searcher.search(search_query, num_results)
++            if "exa_cost_usd" in response.query_stats:
++                exa_total_cost += response.query_stats["exa_cost_usd"]
++            # Convert to dicts for JSON serialization
++            return [
++                {
++                    "url": r.url,
++                    "title": r.title,
++                    "text": r.text if r.text else "",
++                }
++                for r in response.results
++            ]
++
++        system_prompt = f"""
++You are a search assistant that helps find people's professional profiles.
++
++# Task
++You will be given a query and you need to find the {num_results} most relevant people's professional profiles matching the query.
++
++# Tools
++Use the `search` tool to find the results. The `search` tool returns exactly {num_results} results. Inspect the output of the `search` tool systematically.
++The `search` tool can only be called once.
++
++# Output
++When you have the final results, respond with a JSON array of the {num_results} most relevant results, where each result in the array is an object of the following schema:
++{{
++  "type": "object",
++  "properties": {{
++    "url": {{
++      "type": "string"
++    }},
++    "title": {{
++      "type": "string"
++    }},
++    "text": {{
++      "type": "string"
++    }}
++  }},
++  "required": ["url", "title", "text"],
++  "additionalProperties": false
++}}
++
++Do NOT list the results in any other format than the JSON array.
++"""
++
++        messages: list[dict[str, Any]] = [
++            {"role": "system", "content": system_prompt},
++            {
++                "role": "user",
++                "content": f"Query: {query}\nReturn the {num_results} most relevant results matching the query as a JSON array.",
++            },
++        ]
++
++        # Agentic loop - keep calling until we get a final response
++        try:
++            while True:
++                response = await self._client.chat.completions.create(
++                    model=self.model,
++                    messages=messages,
++                    tools=[SEARCH_TOOL],
++                    tool_choice="auto",
++                )
++
++                # Track token usage
++                if response.usage:
++                    total_input_tokens += response.usage.prompt_tokens
++                    total_output_tokens += response.usage.completion_tokens
++
++                choice = response.choices[0]
++                assistant_message = choice.message
++
++                # Add assistant response to messages
++                messages.append(assistant_message.model_dump())
++
++                # Check if we're done (no tool calls)
++                if not assistant_message.tool_calls:
++                    break
++
++                # Process tool calls
++                for tool_call in assistant_message.tool_calls:
++                    if tool_call.function.name == "search":
++                        args = json.loads(tool_call.function.arguments)
++                        search_query = args.get("search_query", query)
++                        search_results = await exa_search(search_query)
++
++                        # Add tool result to messages
++                        messages.append(
++                            {
++                                "role": "tool",
++                                "tool_call_id": tool_call.id,
++                                "content": json.dumps(search_results),
++                            }
++                        )
++        finally:
++            self._log_conversation(query, messages)
++
++        # Parse final response to extract results
++        final_content = assistant_message.content or "[]"
++        results = self._parse_results(final_content)
++
++        # Collect usage stats
++        query_stats: dict[str, Any] = {
++            "search_calls": search_call_count,
++            "input_tokens": total_input_tokens,
++            "output_tokens": total_output_tokens,
++            "total_tokens": total_input_tokens + total_output_tokens,
++        }
++        cost = estimate_cost(self.model, total_input_tokens, total_output_tokens)
++        if cost is not None:
++            query_stats["cost_usd"] = cost
++        if exa_total_cost > 0:
++            query_stats["exa_cost_usd"] = exa_total_cost
++
++        return SearchResponse(results=results[:num_results], query_stats=query_stats)
++
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
++        return await self._search_impl(query, num_results)
++
++    def _log_conversation(self, query: str, messages: list[dict[str, Any]]) -> None:
++        """Log the full agent conversation to a file."""
++        global _agent_counter
++        _agent_counter += 1
++
++        logs_dir = Path("./logs")
++        logs_dir.mkdir(exist_ok=True)
++
++        log_file = logs_dir / f"openai-agent-{_agent_counter}.log"
++        with open(log_file, "w", encoding="utf-8") as f:
++            f.write(f"Query: {query}\n")
++            f.write(f"Model: {self.model}\n")
++            f.write("=" * 80 + "\n\n")
++
++            for msg in messages:
++                role = msg.get("role", "unknown")
++                f.write(f"[{role.upper()}]\n")
++
++                if role == "tool":
++                    tool_call_id = msg.get("tool_call_id", "")
++                    f.write(f"Tool Call ID: {tool_call_id}\n")
++                    # Pretty print the tool result (search results)
++                    try:
++                        content = json.loads(msg.get("content", "[]"))
++                        f.write(json.dumps(content, indent=2))
++                    except json.JSONDecodeError:
++                        f.write(msg.get("content", ""))
++                elif "tool_calls" in msg and msg["tool_calls"]:
++                    # Assistant message with tool calls
++                    if msg.get("content"):
++                        f.write(f"{msg['content']}\n")
++                    f.write("Tool Calls:\n")
++                    for tc in msg["tool_calls"]:
++                        func = tc.get("function", {})
++                        f.write(
++                            f"  - {func.get('name', 'unknown')}({func.get('arguments', '{}')})\n"
++                        )
++                else:
++                    f.write(msg.get("content", "") + "\n")
++
++                f.write("\n" + "-" * 40 + "\n\n")
++
++    def _parse_results(self, content: str) -> list[SearchResult]:
++        """Parse the final response content to extract SearchResult objects.
++
++        Raises:
++            ValueError: If JSON cannot be extracted or doesn't match expected schema.
++        """
++        # Look for JSON array in the content
++        start = content.find("[")
++        end = content.rfind("]") + 1
++        if start == -1 or end <= start:
++            raise ValueError(f"No JSON array found in response: {content[:200]}")
++
++        json_str = content[start:end]
++        try:
++            data = json.loads(json_str)
++        except json.JSONDecodeError as e:
++            raise ValueError(f"Invalid JSON in response: {e}") from e
++
++        if not isinstance(data, list):
++            raise ValueError(f"Expected JSON array, got {type(data).__name__}")
++
++        results = []
++        for i, item in enumerate(data):
++            try:
++                validated = SearchResultSchema.model_validate(item)
++                results.append(
++                    SearchResult(
++                        url=validated.url,
++                        title=validated.title,
++                        text=validated.text,
++                    )
++                )
++            except ValidationError as e:
++                raise ValueError(f"Invalid result at index {i}: {e}") from e
++
++        return results
++
++    async def close(self):
++        await self._exa_searcher.close()
++        await self._client.close()
++
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "model": self.model,
++            "category": self.category,
++            "exa_config": self._exa_searcher.get_config(),
++        }
+diff --git a/simple-people-benchmark/src/searchers/parallel.py b/simple-people-benchmark/src/searchers/parallel.py
+index c0ae799..adbc742 100644
+--- a/simple-people-benchmark/src/searchers/parallel.py
++++ b/simple-people-benchmark/src/searchers/parallel.py
+@@ -3,7 +3,7 @@ from typing import Any
+ 
+ import httpx
+ 
+-from .base import SearchResult, Searcher
++from .base import SearchResponse, SearchResult, Searcher
+ 
+ 
+ class ParallelSearcher(Searcher):
+@@ -16,22 +16,16 @@ class ParallelSearcher(Searcher):
+         processor: str = "base",
+         source_policy: dict | None = None,
+     ):
+-        self.api_key = (
+-            api_key
+-            or os.getenv("PARALLEL_API_KEY")
+-            or os.getenv("PARALLELS_API_KEY")
+-        )
++        self.api_key = api_key or os.getenv("PARALLEL_API_KEY") or os.getenv("PARALLELS_API_KEY")
+         if not self.api_key:
+-            raise ValueError(
+-                "Parallel API key required - set PARALLEL_API_KEY or pass api_key"
+-            )
++            raise ValueError("Parallel API key required - set PARALLEL_API_KEY or pass api_key")
+ 
+         self.base_url = base_url
+         self.processor = processor
+         self.source_policy = source_policy
+         self._client = httpx.AsyncClient(timeout=60.0)
+ 
+-    async def search(self, query: str, num_results: int = 10) -> list[SearchResult]:
++    async def search(self, query: str, num_results: int = 10) -> SearchResponse:
+         payload: dict[str, Any] = {
+             "max_results": num_results,
+             "processor": self.processor,
+@@ -74,13 +68,20 @@ class ParallelSearcher(Searcher):
+                     metadata={
+                         "rank": i,
+                         "author": result.get("author"),
+-                        "published_date": result.get("published_date") or result.get("publishedDate"),
++                        "published_date": result.get("published_date")
++                        or result.get("publishedDate"),
+                     },
+                 )
+             )
+ 
+-        return results
++        return SearchResponse(results=results)
+ 
+     async def close(self):
+         await self._client.aclose()
+ 
++    def get_config(self) -> dict[str, Any]:
++        return {
++            "base_url": self.base_url,
++            "processor": self.processor,
++            "source_policy": self.source_policy,
++        }
