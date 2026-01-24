@@ -75,32 +75,15 @@ You are a search assistant that helps reorder search results by relevance.
 You will be given a query and {num_results} search results for this query. Your goal is to reorder these results by relevance from the most relevant to the least relevant.
 
 # Output
-Respond with a JSON array of the {num_results} results sorted by relevance from the most relevant to the least relevant, where each result in the array is an object of the following schema:
-{{
-  "type": "object",
-  "properties": {{
-    "url": {{
-      "type": "string"
-    }},
-    "title": {{
-      "type": "string"
-    }},
-    "text": {{
-      "type": "string"
-    }}
-  }},
-  "required": ["url", "title", "text"],
-  "additionalProperties": false
-}}
-
-Do NOT list the results in any other format than the JSON array.
+Respond with a list of 10 integers, where each integer is the index of the result in the original list of {num_results} results, sorted by relevance from the most relevant to the least relevant.
+Do NOT list the results in any other format than the list of 10 integers.
 """
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": f"Query: {query}\n\nResults to reorder:\n{json.dumps(results_for_model, indent=2)}\n\nReturn all {num_results} results reordered by relevance as a JSON array.",
+                "content": f"Query: {query}\n\nResults:\n{json.dumps(results_for_model, indent=2)}\n\nReturn the indices of the {num_results} results reordered by relevance as a list of 10 integers.",
             },
         ]
 
@@ -124,7 +107,8 @@ Do NOT list the results in any other format than the JSON array.
         self._log_conversation(query, messages)
 
         # Parse final response to extract results
-        results = self._parse_results(final_content, exa_results)
+        indices = self._parse_results(final_content, exa_results)
+        results = [exa_results[i] for i in indices]
 
         # Collect usage stats
         query_stats: dict[str, Any] = {
@@ -165,48 +149,24 @@ Do NOT list the results in any other format than the JSON array.
 
     def _parse_results(
         self, content: str, original_results: list[SearchResult]
-    ) -> list[SearchResult]:
-        """Parse the response content to extract reordered SearchResult objects.
+    ) -> list[int]:
+        """Parse the response content to extract reordered indices.
 
         Falls back to original results if parsing fails.
         """
-        # Look for JSON array in the content
-        start = content.find("[")
-        end = content.rfind("]") + 1
-        if start == -1 or end <= start:
-            raise ValueError(f"No JSON array found in response: {content[:200]}")
-
-        json_str = content[start:end]
+        if not content.startswith("["):
+            content = "[" + content
+        if not content.endswith("]"):
+            content = content + "]"
         try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in response: {e}") from e
-
-        if not isinstance(data, list):
-            raise ValueError(f"Expected JSON array, got {type(data).__name__}")
-
-        # Build URL lookup from original results to preserve full text
-        url_to_result = {r.url: r for r in original_results}
-
-        results = []
-        for i, item in enumerate(data):
-            try:
-                validated = SearchResultSchema.model_validate(item)
-                # Try to find original result by URL to preserve full text
-                if validated.url in url_to_result:
-                    results.append(url_to_result[validated.url])
-                else:
-                    results.append(
-                        SearchResult(
-                            url=validated.url,
-                            title=validated.title,
-                            text=validated.text,
-                        )
-                    )
-            except ValidationError as e:
-                raise ValueError(f"Invalid result at index {i}: {e}") from e
-
-        return results
+            indices = eval(content)
+        except Exception as e:
+            raise ValueError(f"Invalid indices in response: {e}") from e
+        assert len(indices) == 10, f"Expected 10 indices, got {len(indices)}"
+        assert all(isinstance(i, int) for i in indices), "Indices must be integers"
+        assert all(0 <= i < len(original_results) for i in indices), "Indices must be within range"
+        assert len(set(indices)) == len(indices), "Indices must be unique"
+        return indices
 
     async def close(self):
         await self._client.close()

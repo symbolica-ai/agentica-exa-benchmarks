@@ -66,7 +66,7 @@ class AgenticaOrderer(Searcher):
 You are a search assistant that helps reorder search results by relevance.
 
 # Task
-You will be given a query and {num_results} search results for this query. Your goal is to reorder these results by relevance from the most relevant to the least relevant.
+You will be given a query and {num_results} search results for this query. Your goal is to return the indices of these results sorted by relevance from the most relevant to the least relevant.
 
 Your workflow outline:
 
@@ -80,9 +80,9 @@ As many times as needed:
 ... # analyze the results, reorder
 ```
 
-Only after all output of code blocks above is inspected and you are sure you got {num_results} results sorted by relevance from the most relevant to the least relevant, return:
+Only after all output of code blocks above is inspected and you are sure you got the indices of the {num_results} results sorted by relevance from the most relevant to the least relevant, return:
 ```python
-return result
+return [indices]
 ```
 
 """,
@@ -96,10 +96,11 @@ return result
             )
 
         # Agent calls can run in parallel
-        reordered_results: list[SearchResult] = await agent.call(
-            list[SearchResult],
-            f"Query: {query}\nReturn all {num_results} results reordered by relevance.",
+        indices: list[int] = await agent.call(
+            list[int],
+            f"Query: {query}\nReturn the indices of the {num_results} results sorted by relevance from the most relevant to the least relevant.",
         )
+        results = [exa_results[i] for i in indices]
 
         # Collect usage stats
         usage = agent.last_usage()
@@ -114,7 +115,20 @@ return result
         if exa_cost > 0:
             query_stats["exa_cost_usd"] = exa_cost
 
-        return SearchResponse(results=reordered_results[:num_results], query_stats=query_stats)
+        return SearchResponse(results=results[:num_results], query_stats=query_stats)
+
+    def _parse_results(
+        self, indices: list[int], original_results: list[SearchResult]
+    ) -> list[int]:
+        """Parse the response content to extract reordered indices.
+
+        Falls back to original results if parsing fails.
+        """
+        assert len(indices) == 10, f"Expected 10 indices, got {len(indices)}"
+        assert all(isinstance(i, int) for i in indices), "Indices must be integers"
+        assert all(0 <= i < len(original_results) for i in indices), "Indices must be within range"
+        assert len(set(indices)) == len(indices), "Indices must be unique"
+        return indices
 
     async def search(self, query: str, num_results: int = 10) -> SearchResponse:
         return await self._search_impl(query, num_results)
